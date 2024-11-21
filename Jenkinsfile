@@ -1,100 +1,120 @@
 pipeline {
     agent any
-
     tools {
-        maven 'Maven 3.9.8'
+        maven '3.9.5'
     }
-
     environment {
-        BUILD_VERSION = readMavenPom().getVersion()
-        DOCKER_IMAGE = 'mohyehia99/spring-boot-testing'
+        NEXUS_CREDENTIAL_ID = "nexus"
+        NEXUS_URL = 'http://localhost:6666'
+        NEXUS_REPO = 'dockerhosted-repo'
+        DOCKER_IMAGE_NAME = "car-pooling-be:${BUILD_ID}"
     }
-
-    stages {
-
-        stage('Clean Workspace') {
-            steps {
-                script {
-                    cleanWs()
-                }
-            }
-        }
-
+    stages{
         stage('Checkout') {
-            steps {
-                git branch: 'main', url: 'https://github.com/mohyehia/spring-boot-testing'
+            steps{
+                // git branch: 'main', credentialsId: 'github-jenkins', url: 'https://github.com/hjaijhoussem/Car-pooling-backend.git'
+                git branch: 'main', credentialsId: 'github-jenkins', url:'https://github.com/hjaijhoussem/spring-boot-testing.git'
             }
         }
 
-        stage('Unit Testing') {
-            steps {
-                sh 'mvn clean test'
+        stage('Build Artifact'){
+            steps{
+                sh 'mvn clean install -DskipTests'
             }
         }
 
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv(credentialsId: 'sonarQube-token', installationName: 'SonarQube') {
-                    sh "mvn verify sonar:sonar -DskipTests=true -Dsonar.projectKey=spring-boot-testing -Dsonar.projectName='spring-boot-testing'"
+
+        stage('Quality Analysis'){
+            steps{
+                withSonarQubeEnv('mysonar'){
+                   sh """
+                    mvn sonar:sonar \
+                        -Dsonar.projectKey=car-pooling \
+                        -Dsonar.projectName=car-pooling \
+                        -Dsonar.sources=src/main/java \
+                        -Dsonar.java.binaries=target/classes
+                    """
                 }
+
+            }
+        }
+        stage('Quality Gate'){
+            steps{
                 waitForQualityGate abortPipeline: true
             }
         }
 
-        stage('Package') {
+        stage('Login to Nexus') {
             steps {
-                sh 'mvn package -Dmaven.test.skip'
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'nexus', usernameVariable: 'NEXUS_USERNAME', passwordVariable: 'NEXUS_PASSWORD')]) {
+                        sh "docker login ${NEXUS_URL} -u ${NEXUS_USERNAME} -p ${NEXUS_PASSWORD}"
+                    } pipeline {
+    agent any
+    stages{
+        stage('Checkout') {
+            steps{
+                git branch: 'main', credentialsId: 'github-jenkins', url: 'https://github.com/hjaijhoussem/Car-pooling-backend.git'
             }
         }
-
-        stage('Publish test results') {
-            steps {
-                junit "**/target/surefire-reports/*.xml"
+        stage('Build Artifact'){
+            agent {
+                docker {
+                    image 'maven:3.9.5-sapmachine-21'
+                }
+            }
+            steps{
+                sh 'mvn clean package'
             }
         }
+        stage('Build Docker image'){
+            steps{
+                echo 'Building Image ...'
+                sh "docker build -t nexus:8082/car-pooling:${BUILD_NUMBER} ."
 
-        stage('OWASP Dependency Check') {
-            steps {
-                dependencyCheck additionalArguments: '''
-                    -o './\'
-                    -s './\'
-                    -f 'ALL'
-                    --prettyPrint''', odcInstallation: 'OWASP Dependency Check'
-                dependencyCheckPublisher pattern: 'dependency-check-report.xml'
             }
         }
-
-        stage('Trivy FS Scan') {
-            steps {
-                sh 'trivy fs .'
+        stage('Push to nexus'){
+            steps{
+                echo 'Pushing image to docker hosted rerpository on Nexus'
+                withCredentials([usernamePassword(credentialsId: 'nexus', passwordVariable: 'PSW', usernameVariable: 'USER')]){
+                sh "echo ${PSW} | docker login -u ${USER} --password-stdin nexus:8082"
+                sh "docker push nexus:8082/car-pooling:${BUILD_NUMBER}"
+            }
             }
         }
-
-        stage('Docker Build') {
-            steps {
-                sh "mvn spring-boot:build-image -DskipTests"
+    }
+}
+                }
             }
         }
-
-        stage('Trivy Image Scan') {
+        stage('Build Docker Image') {
             steps {
-                sh 'trivy image mohyehia99/spring-boot-testing:${BUILD_VERSION}'
+                script {
+                    sh "docker build -t ${DOCKER_IMAGE_NAME} ."
+                }
             }
         }
-
-        stage('Docker Push') {
+        stage('Push Docker Image') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'dockerHubUsername', passwordVariable: 'dockerHubPassword')]) {
-                    sh "docker login -u ${env.dockerHubUsername} -p ${env.dockerHubPassword}"
-                    sh "docker push mohyehia99/spring-boot-testing:${BUILD_VERSION}"
+                script {
+                    sh "docker tag ${DOCKER_IMAGE_NAME} localhost:6666/repository/dockerhosted-repo/${NEXUS_REPO}/${DOCKER_IMAGE_NAME}"
+                    sh "docker push localhost:6666/repository/dockerhosted-repo/${NEXUS_REPO}/${DOCKER_IMAGE_NAME}"
                 }
             }
         }
 
-        stage('Trigger microservices-k8s-manifests Job') {
-            steps {
-                sh "curl -v -k --user admin:11295d15cb5acb2914d803b4d62222b728 -X POST -H 'cache-control: no-cache' -H 'Content-Type: application/x-www-form-urlencoded' --data 'DOCKER_IMAGE=${DOCKER_IMAGE}&BUILD_VERSION=${BUILD_VERSION}&APPLICATION=spring-boot-testing' http://localhost:8080/job/microservices-k8s-manifests/buildWithParameters?token=spring-microservices-in-action-token"
-            }
+    }
+    post {
+        always {
+            echo 'Cleaning up...'
+            sh 'mvn clean'
+        }
+        success {
+            echo 'The build and SonarQube analysis were successful with a passing quality gate and unit test!'
+        }
+        failure {
+            echo 'The build, SonarQube analysis, unit tests, or quality gate check failed.'
         }
     }
 }
