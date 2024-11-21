@@ -49,42 +49,7 @@ pipeline {
                 script {
                     withCredentials([usernamePassword(credentialsId: 'nexus', usernameVariable: 'NEXUS_USERNAME', passwordVariable: 'NEXUS_PASSWORD')]) {
                         sh "docker login ${NEXUS_URL} -u ${NEXUS_USERNAME} -p ${NEXUS_PASSWORD}"
-                    } pipeline {
-    agent any
-    stages{
-        stage('Checkout') {
-            steps{
-                git branch: 'main', credentialsId: 'github-jenkins', url: 'https://github.com/hjaijhoussem/Car-pooling-backend.git'
-            }
-        }
-        stage('Build Artifact'){
-            agent {
-                docker {
-                    image 'maven:3.9.5-sapmachine-21'
-                }
-            }
-            steps{
-                sh 'mvn clean package'
-            }
-        }
-        stage('Build Docker image'){
-            steps{
-                echo 'Building Image ...'
-                sh "docker build -t nexus:8082/car-pooling:${BUILD_NUMBER} ."
-
-            }
-        }
-        stage('Push to nexus'){
-            steps{
-                echo 'Pushing image to docker hosted rerpository on Nexus'
-                withCredentials([usernamePassword(credentialsId: 'nexus', passwordVariable: 'PSW', usernameVariable: 'USER')]){
-                sh "echo ${PSW} | docker login -u ${USER} --password-stdin nexus:8082"
-                sh "docker push nexus:8082/car-pooling:${BUILD_NUMBER}"
-            }
-            }
-        }
-    }
-}
+                    } 
                 }
             }
         }
